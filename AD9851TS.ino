@@ -15,6 +15,7 @@
 #include <Adafruit_ILI9341.h>           // Standard Adafruit ILI9341 driver
 #include <XPT2046_Touchscreen.h>        // My XPT2046 driver
 #include <AD9851.h>                     // My AD9851 driver
+#include <TSEvents.h>                   // Touchscreen event processing
 
 // Use hardware SPI (on Uno, #13, #12, #11) and these for CS&DC:
 #define TFT_DC  9                       // Define your pin for the ILI9341 D/C signal
@@ -22,21 +23,27 @@
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 /*
- * This is calibration data for the raw touch data to the screen coordinates.
- * The bare chip sends values in the range 0..4095. These set the useful range.
- * You will need to adjust these values to set the X and Y ranges to 0..320, 240
+ * Software driver (based on a template) for the touchscreen events
  */
-#define TS_MINX 450
-#define TS_MAXX 3800
-#define TS_MINY 130
-#define TS_MAXY 4000
-
-#define TS_AUTOREPEAT           250     // Auto Repeat time in ms
-#define TS_MOTION_THRESHOLD     10      // pixels; we don't use motion
+// our handlers for touchscreen events are below
+void	activate(int x, int y);
+void	dragTo(int digit, int x, int y);
 
 #define TS_CS 8                         // Define your Chip Select pin for the XPT2046
-XPT2046_Touchscreen ts(TS_CS, XPT2046_NO_IRQ, XPT2046_FLIP_X|XPT2046_FLIP_Y);
-void dragCapture(int id = 0);
+class TouchscreenEvents
+: public TSEvents<XPT2046_Touchscreen>	// We're going to use an XPT2046_Touchscreen here
+{
+public:
+  TouchscreenEvents()
+  : TSEvents<XPT2046_Touchscreen>(	// Here's where we construct the hardware driver:
+    XPT2046_Touchscreen(TS_CS, XPT2046_NO_IRQ, XPT2046_FLIP_X|XPT2046_FLIP_Y)
+  )
+  {}
+  void	touch(int x, int y) { activate(x, y); }
+  void  repeat(int x, int y) { activate(x, y); }
+  void	dragTo(int capture_id, int x, int y) { ::dragTo(capture_id, x, y); }
+};
+TouchscreenEvents	tsev;		// This object encapsulates the touchscreen and event detection
 
 /*
  * To calibrate the frequency of your AD9851 module,
@@ -53,15 +60,13 @@ AD9851  dds(AD9851_CS_PIN);
 unsigned long frequency = 10000000;     // The frequency we want
 unsigned long displayed = 0;            // The frequency on the display
 
-inline int iabs(int i) { return i < 0 ? -i : i; }
-
 void setup() {
   Serial.begin(9600);
   tft.begin();            // Start the LCD
   Serial.println(F("AD9851 Touchscreen"));
 
   // Start the touchscreen
-  if (!ts.begin()) {
+  if (!tsev.begin()) {
     Serial.println("Couldn't start touchscreen");
     while (1);
   }
@@ -84,7 +89,7 @@ void setup() {
 void loop(void) {
   if (displayed != frequency)
     set_frequency(TEXT_X, TEXT_Y);
-  detectTouches();
+  tsev.detect();
 }
 
 /*
@@ -145,7 +150,7 @@ void activate(int x, int y)
     new_frequency -= increment;
   } else {                              // Drag this digit up or down
     // Serial.print("drag ");
-    dragCapture(digit);                 // Start dragging on this digit
+    tsev.dragCapture(digit);                 // Start dragging on this digit
     dragAdjustment = 0;
   }
   // Serial.println(digit);
@@ -168,88 +173,6 @@ void dragTo(int digit, int x, int y)
   Serial.print(digit);
   Serial.print(" to ");
   Serial.println(frequency);            // Show the actual frequency, in case it was bad
-}
-
-/*
- * Touch event handler functions.
- * These are all notionally part of the touch API.
- */
-int     capture_id = 0;                 // If non-zero, we're dragging. The value carries context.
-void dragCapture(int id)
-{
-  capture_id = id;
-}
-
-void touch(int x, int y)
-{
-//  showXY("touch", x, y);
-  activate(x, y);
-}
-
-void repeat(int x, int y)
-{
-//  showXY("repeat", x, y);
-  if (!capture_id)             // Don't repeat while we have a drag capture
-    activate(x, y);
-}
-
-void motion(int x, int y)
-{
-//  showXY("motion", x, y);
-  if (capture_id)
-    dragTo(capture_id, x, y);
-}
-
-void release(int x, int y)
-{
-//  showXY("release", x, y);
-  dragCapture(0);
-}
-
-void showXY(const char* why, int x, int y)
-{
-  Serial.print(why);
-  Serial.print("(");
-  Serial.print(x);
-  Serial.print(',');
-  Serial.print(y);
-  Serial.println(")");
-}
-
-void detectTouches()
-{
-  static bool touching = false; // Were we touching?
-  static unsigned long  last_touch = 0;   // millis() as at last touch or auto-repeat
-  static int  last_x = 0;
-  static int  last_y = 0;
-  int         x, y;
-  if (ts.touched()) {
-    TS_Point p = ts.getPoint();
-
-    // Scale from ~0->4000 to tft.width using the calibration #'s
-    x = map(p.x, TS_MINX, TS_MAXX, 0, tft.width());
-    y = map(p.y, TS_MINY, TS_MAXY, 0, tft.height());
-
-    if (!touching) {                // Touch just started
-      last_touch = millis();
-      touching = true;
-      touch(x, y);
-    } else if (millis()-TS_AUTOREPEAT > last_touch) { // auto-repeat
-      last_touch = millis();
-      repeat(x, y);
-    } else {                        // Not yet time to auto-repeat
-      if (iabs(x-last_x) + iabs(y-last_y) < TS_MOTION_THRESHOLD)
-        return;                     // Not enough motion to matter
-      motion(x, y);
-    }
-    last_x = x;
-    last_y = y;
-  } else {
-    if (!touching)
-      return;
-    release(last_x, last_y);
-    touching = false;
-  }
 }
 
 #if 0
