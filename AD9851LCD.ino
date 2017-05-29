@@ -36,7 +36,7 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 #define TS_CS 8                         // Define your Chip Select pin for the XPT2046
 XPT2046_Touchscreen ts(TS_CS, XPT2046_NO_IRQ, XPT2046_FLIP_X|XPT2046_FLIP_Y);
-void dragEnable(int id = 0);
+void dragCapture(int id = 0);
 
 /*
  * To calibrate the frequency of your AD9851 module,
@@ -44,11 +44,11 @@ void dragEnable(int id = 0);
  * generated, and then change this calibration factor
  * to the frequency you measured.
  */
-#define CALIBRATION   9999941           // Set this to the frequency produced when set to 10MHz
+#define CALIBRATION   9999941           // Set this to the correct value for calibration.
 #define FREQUENCY_MAX 30000000          // 30MHz max. It won't be a clean signal, so don't go higher!
 
 #define AD9851_CS_PIN  2                // Define your Chip Select pin for the AD9851
-AD9851 dds(AD9851_CS_PIN);
+AD9851  dds(AD9851_CS_PIN);
 
 unsigned long frequency = 10000000;     // The frequency we want
 unsigned long displayed = 0;            // The frequency on the display
@@ -121,9 +121,10 @@ void applyFrequency(unsigned long new_frequency)
     frequency = new_frequency;
 }
 
-// A touch or repeat on the screen comes here
-unsigned long dragAdjustment; // The scaled value of the drag adjustment
-unsigned long increment;  // The unit value of the digit we're adjusting.
+unsigned long dragAdjustment;   // The scaled value of the drag adjustment
+unsigned long increment;        // The unit value of the digit we're adjusting.
+
+// A touch or repeat on the screen comes here. Figure out what digit to adjust.
 void activate(int x, int y)
 {
   unsigned long new_frequency = frequency;
@@ -135,42 +136,48 @@ void activate(int x, int y)
   increment = 1;
   for (int i = 1; i < digit; i++)
     increment *= 10;
-  
-  if (y < TEXT_Y-CHAR_ASCENT) {           // Step up
+
+  if (y < TEXT_Y-CHAR_ASCENT) {         // Step up
     // Serial.print("raise ");
     new_frequency += increment;
-  } else if (y > TEXT_Y+CHAR_DESCENT) {   // Step down
+  } else if (y > TEXT_Y+CHAR_DESCENT) { // Step down
     // Serial.print("lower ");
     new_frequency -= increment;
-  } else {                                // Drag this digit up or down
+  } else {                              // Drag this digit up or down
     // Serial.print("drag ");
-    dragEnable(digit);
+    dragCapture(digit);                 // Start dragging on this digit
     dragAdjustment = 0;
   }
   // Serial.println(digit);
   applyFrequency(new_frequency);
 }
 
+// We set a dragCapture on a digit, and have moved from there to (x, y)
 void dragTo(int digit, int x, int y)
 {
-  // We started dragging on a digit, and have moved from there
+  unsigned long new_frequency = frequency;
+  int   units;
+
+  units = (TEXT_Y-CHAR_ASCENT/2-y) / 10;// Each ten pixels is one unit
+  new_frequency -= dragAdjustment;      // Cancel previous adjustment
+  dragAdjustment = units*increment;     // Calculate new adjustment
+  new_frequency += dragAdjustment;      // And make it
+  applyFrequency(new_frequency);
+
   Serial.print("drag digit ");
   Serial.print(digit);
-  Serial.print(" from ");
-  Serial.print(dragAdjustment);
   Serial.print(" to ");
-  int units = (TEXT_Y-CHAR_ASCENT/2-y) / 10;  // Each ten pixels is one unit
-  unsigned long new_frequency = frequency-dragAdjustment+units*increment;
-  dragAdjustment = units*increment;
-  applyFrequency(new_frequency);
-  Serial.println(frequency);
+  Serial.println(frequency);            // Show the actual frequency, in case it was bad
 }
 
-/* Touch event handler functions */
-int     dragging_id = 0;        // If non-zero, we're dragging. The value carries context.
-void dragEnable(int id)
+/*
+ * Touch event handler functions.
+ * These are all notionally part of the touch API.
+ */
+int     capture_id = 0;                 // If non-zero, we're dragging. The value carries context.
+void dragCapture(int id)
 {
-  dragging_id = id;
+  capture_id = id;
 }
 
 void touch(int x, int y)
@@ -182,21 +189,21 @@ void touch(int x, int y)
 void repeat(int x, int y)
 {
 //  showXY("repeat", x, y);
-  if (!dragging_id)             // Don't repeat while we're dragging
+  if (!capture_id)             // Don't repeat while we have a drag capture
     activate(x, y);
 }
 
 void motion(int x, int y)
 {
 //  showXY("motion", x, y);
-  if (dragging_id)
-    dragTo(dragging_id, x, y);
+  if (capture_id)
+    dragTo(capture_id, x, y);
 }
 
 void release(int x, int y)
 {
 //  showXY("release", x, y);
-  dragEnable(0);
+  dragCapture(0);
 }
 
 void showXY(const char* why, int x, int y)
