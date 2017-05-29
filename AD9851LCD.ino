@@ -196,7 +196,7 @@ void motion(int x, int y)
 void release(int x, int y)
 {
 //  showXY("release", x, y);
-  dragging_id = 0;
+  dragEnable(0);
 }
 
 void showXY(const char* why, int x, int y)
@@ -212,7 +212,7 @@ void showXY(const char* why, int x, int y)
 void detectTouches()
 {
   static bool touching = false; // Were we touching?
-  static int  last_touch = 0;   // millis() as at last touch or auto-repeat
+  static unsigned long  last_touch = 0;   // millis() as at last touch or auto-repeat
   static int  last_x = 0;
   static int  last_y = 0;
   int         x, y;
