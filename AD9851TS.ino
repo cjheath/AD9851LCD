@@ -51,11 +51,15 @@ TouchscreenEvents	tsev;		// This object encapsulates the touchscreen and event d
  * generated, and then change this calibration factor
  * to the frequency you measured.
  */
-#define CALIBRATION   9999941           // Set this to the correct value for calibration.
-#define FREQUENCY_MAX 30000000          // 30MHz max. It won't be a clean signal, so don't go higher!
+#define CALIBRATION		9999953           // Set this to the correct value for calibration.
+#define AD9851_FQ_UD_PIN	2
+#define AD9851_RESET_PIN	3
+// And MOSI=11, SCK=13
 
-#define AD9851_CS_PIN  2                // Define your Chip Select pin for the AD9851
-AD9851  dds(AD9851_CS_PIN);
+class MyAD9851 : public AD9851<AD9851_RESET_PIN, AD9851_FQ_UD_PIN, CALIBRATION> {};
+MyAD9851 dds;
+
+#define FREQUENCY_MAX 30000000          // 30MHz max. It won't be a clean signal, so don't go higher!
 
 unsigned long frequency = 10000000;     // The frequency we want
 unsigned long displayed = 0;            // The frequency on the display
