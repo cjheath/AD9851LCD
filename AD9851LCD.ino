@@ -18,15 +18,14 @@
 #include <TSEvents.h>                   // Touchscreen event processing
 
 // Use hardware SPI (on Uno, #13, #12, #11) and these for CS&DC:
-#define TFT_DC  9                       // Define your pin for the ILI9341 D/C signal
-#define TFT_CS  10                      // Define your pin for the ILI9341 Chip Select
+#define TFT_DC  6                       // Define your pin for the ILI9341 D/C signal
+#define TFT_CS  3                       // Define your pin for the ILI9341 Chip Select
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 /*
  * Software driver (based on a template) for the touchscreen events
  */
 // our handlers for touchscreen events are below
-void	activate(int x, int y);
 void	dragTo(int digit, int x, int y);
 
 #define TS_CS 8                         // Define your Chip Select pin for the XPT2046
@@ -39,33 +38,33 @@ public:
     XPT2046_Touchscreen(TS_CS, XPT2046_NO_IRQ, XPT2046_FLIP_X|XPT2046_FLIP_Y)
   )
   {}
-  void	touch(int x, int y) { activate(x, y); }
-  void  repeat(int x, int y) { activate(x, y); }
-  void	dragTo(int capture_id, int x, int y) { ::dragTo(capture_id, x, y); }
+  void	touch(int x, int y);
+  void  repeat(int x, int y) { touch(x, y); }
+  void	dragTo(int capture_id, int x, int y);
 };
 TouchscreenEvents	tsev;		// This object encapsulates the touchscreen and event detection
 
 /*
- * To calibrate the frequency of your AD9851 module,
- * set this value to 10000000. Measure the frequency
- * generated, and then change this calibration factor
- * to the frequency you measured.
+ * Calibration is offset in parts-per-billion error (positive if the frequency is high, negative if low)
+ * To calibrate the frequency of your AD9851 module, set this value to 0.
+ * Measure the frequency generated, and then change this calibration factor
  */
-#define CALIBRATION		9999953           // Set this to the correct value for calibration.
-#define AD9851_FQ_UD_PIN	2
-#define AD9851_RESET_PIN	3
+#define CALIBRATION		0L           // Set this to the correct value for calibration.
+#define AD9851_FQ_UD_PIN	10
+#define AD9851_RESET_PIN	9
+#define AD9851_REFERENCE_FREQ	180000000L	// Default 3rd template argument (x6 multiplier engaged)
 // And MOSI=11, SCK=13
 
-class MyAD9851 : public AD9851<AD9851_RESET_PIN, AD9851_FQ_UD_PIN, CALIBRATION> {};
+class MyAD9851 : public AD9851<AD9851_RESET_PIN, AD9851_FQ_UD_PIN> {};
 MyAD9851 dds;
 
-#define FREQUENCY_MAX 30000000          // 30MHz max. It won't be a clean signal, so don't go higher!
+#define FREQUENCY_MAX 70000000          // 70MHz max, to match the filter
 
 unsigned long frequency = 10000000;     // The frequency we want
 unsigned long displayed = 0;            // The frequency on the display
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(19200);
   tft.begin();            // Start the LCD
   Serial.println(F("AD9851 Touchscreen"));
 
@@ -78,50 +77,76 @@ void setup() {
 
   tft.fillScreen(ILI9341_BLACK);
   tft.setRotation(3);
+  if (CALIBRATION != 0)
+  	dds.setClock(CALIBRATION);
 }
 
-/* Geometry of our chosen font */
-#define CHAR_WIDTH    28                                // Spacing in pixels
-#define CHAR_HEIGHT   40                                // Total height of a character
-#define CHAR_DESCENT  5                                 // Descent below the baseline
+/* Geometry of the font */
+#define FONT_WIDTH    6                                 // Spacing in pixels
+#define FONT_HEIGHT   8                                 // Total height of a character
+#define	FONT_DESCENT  1					// Pixels below baseline
+
+/* Geometry of main numeric display text */
+#define	CHAR_MAG      5					// Multiply the font 5x
+#define	CHAR_CONTRACT 2					// Pixels to contract width per magnified char
+#define CHAR_WIDTH    (FONT_WIDTH*CHAR_MAG-CHAR_CONTRACT) // Spacing in pixels
+#define CHAR_HEIGHT   (FONT_HEIGHT*CHAR_MAG)            // Total height of a character
+#define CHAR_DESCENT  (FONT_DESCENT*CHAR_MAG)           // Descent below the baseline
 #define CHAR_ASCENT   (CHAR_HEIGHT-CHAR_DESCENT)        // Ascent above the baseline
 
 /* Positioning of the frequency display */
 #define TEXT_X        0                                 // Left side
 #define TEXT_Y        ((240+CHAR_ASCENT)/2)             // Text baseline
 
+void show_number(long number, int indent, int baseline, int size = CHAR_MAG, int foreground = ILI9341_CYAN, int background = ILI9341_DARKGREEN);
+
 void loop(void) {
   if (displayed != frequency)
-    set_frequency(TEXT_X, TEXT_Y);
+    change_frequency();
   tsev.detect();
 }
 
-/*
- * Text display for the frequency.
- * We draw one character at a time, so we know where each is.
- */
-void set_frequency(int x, int y)
+void change_frequency()
 {
-  dds.setFrequency(frequency*10000000ULL/CALIBRATION);
+  // Change the DDS
+  uint32_t delta = dds.frequencyDelta(frequency);
+  dds.setDelta(delta);
 
-  tft.setTextSize(5);                   // 30x40 pixels (five times 6x8)
-  tft.setTextColor(ILI9341_CYAN);       // Background is not defined so it is transparent
-  tft.fillRect(x, y-CHAR_ASCENT-10, 10*CHAR_WIDTH, CHAR_ASCENT+CHAR_DESCENT+15, ILI9341_DARKGREEN);
-  unsigned long f = frequency;
+  // Display the change
+  show_number(frequency, TEXT_X, TEXT_Y);
+
+  // Record the change
+  displayed = frequency;
+
+  // Show a diagnostic
+  Serial.print("Frequency set to ");
+  Serial.print(frequency);
+  Serial.print(", delta ");
+  Serial.println(delta);
+}
+
+/*
+ * Text display for numbers. Ten characters, displays up to 99,999,999
+ * Draws one character at a time to control the density.
+ */
+void show_number(long number, int indent, int baseline, int size = CHAR_MAG, int foreground = ILI9341_CYAN, int background = ILI9341_DARKGREEN)
+{
+  tft.setTextSize(size);		// 30x40 pixels (five times 6x8)
+  tft.setTextColor(foreground);		// Background is not defined so it is transparent
+#define TEXT_PAD	5
+  tft.fillRect(indent, baseline-CHAR_ASCENT-TEXT_PAD, 10*CHAR_WIDTH, CHAR_ASCENT+CHAR_DESCENT+TEXT_PAD*2, background);
+  unsigned long n = number;
   for (int place = 10; place > 0;) {    // Derive the digits from the right to left
-    tft.setCursor(x+CHAR_WIDTH*--place, y-CHAR_HEIGHT+CHAR_DESCENT);
-    if (f)
-      tft.print((char)('0'+f%10));
-    f /= 10;
-    if (f && (place == 7 || place == 3)) {
-      tft.setCursor(x+CHAR_WIDTH*--place, y-CHAR_HEIGHT+CHAR_DESCENT);
-      tft.print(',');
+    tft.setCursor(indent+CHAR_WIDTH*--place, baseline-CHAR_HEIGHT+CHAR_DESCENT);
+    if (n)
+      tft.print((char)('0'+n%10));
+    n /= 10;
+    if (n && (place == 7 || place == 3)) {
+      tft.setCursor(indent+CHAR_WIDTH*--place, baseline-CHAR_HEIGHT+CHAR_DESCENT);
+      tft.print(',');		// These commas are really ugly.
     }
   }
-  // tft.drawLine(x, y, x+10*CHAR_WIDTH, y, ILI9341_RED); // Draw the text baseline
-  Serial.print("Frequency set to ");
-  Serial.println(frequency);
-  displayed = frequency;
+  // tft.drawLine(indent, baseline, indent+10*CHAR_WIDTH, baseline, ILI9341_RED); // Draw the text baseline
 }
 
 void applyFrequency(unsigned long new_frequency)
@@ -134,7 +159,8 @@ unsigned long dragAdjustment;   // The scaled value of the drag adjustment
 unsigned long increment;        // The unit value of the digit we're adjusting.
 
 // A touch or repeat on the screen comes here. Figure out what digit to adjust.
-void activate(int x, int y)
+void
+TouchscreenEvents::touch(int x, int y)
 {
   unsigned long new_frequency = frequency;
   int digit = (TEXT_X+10*CHAR_WIDTH-x) / CHAR_WIDTH + 1;
@@ -147,22 +173,22 @@ void activate(int x, int y)
     increment *= 10;
 
   if (y < TEXT_Y-CHAR_ASCENT) {         // Step up
-    // Serial.print("raise ");
+    Serial.print("raise ");
     new_frequency += increment;
   } else if (y > TEXT_Y+CHAR_DESCENT) { // Step down
-    // Serial.print("lower ");
+    Serial.print("lower ");
     new_frequency -= increment;
   } else {                              // Drag this digit up or down
-    // Serial.print("drag ");
+    Serial.print("drag ");
     tsev.dragCapture(digit);                 // Start dragging on this digit
     dragAdjustment = 0;
   }
-  // Serial.println(digit);
+  Serial.println(digit);
   applyFrequency(new_frequency);
 }
 
 // We set a dragCapture on a digit, and have moved from there to (x, y)
-void dragTo(int digit, int x, int y)
+void TouchscreenEvents::dragTo(int digit, int x, int y)
 {
   unsigned long new_frequency = frequency;
   int   units;
